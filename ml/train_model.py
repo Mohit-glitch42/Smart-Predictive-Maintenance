@@ -1,61 +1,39 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 import joblib
+from preprocess import add_rul
+from load_dataset import load_cmaps
 
-# 1. Load data
-df = pd.read_csv("jet_engine_sample_data.csv")
+# Load and preprocess C-MAPSS dataset
+train_df, test_df, rul_df = load_cmaps()
+train_df = add_rul(train_df)
 
-feature_cols = [
-    "cycles_since_maintenance",
-    "avg_turbine_temp",
-    "compressor_pressure_ratio",
-    "vibration_level",
-    "fuel_flow_variation",
-    "previous_failures",
-]
+# Create classification labels based on RUL threshold
+train_df['label'] = train_df['RUL'].apply(lambda x: 1 if x <= 30 else 0)
 
-X = df[feature_cols]
-y = df["failed_within_30_cycles"]
+# Select feature columns (operational settings + sensor values)
+feature_cols = [col for col in train_df.columns if 'sensor' in col or 'op_setting' in col]
 
-# 2. Train-test split (to check generalization on unseen data)
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-
-# 3. Pipeline: scaling + RandomForest
-pipeline = Pipeline(
-    steps=[
-        ("scaler", StandardScaler()),
-        ("model", RandomForestClassifier(
-            n_estimators=200,
-            max_depth=8,
-            random_state=42,
-            class_weight="balanced"
-        ))
-    ]
-)
-
-# 4. Cross-validation to reduce overfitting risk
-cv_scores = cross_val_score(pipeline, X_train, y_train, cv=5, scoring="roc_auc")
-print(f"Cross-val ROC AUC scores: {cv_scores}")
-print(f"Mean CV ROC AUC: {cv_scores.mean():.3f}")
-
-# 5. Train on full training set
-pipeline.fit(X_train, y_train)
-
-# 6. Evaluate on untouched test set
-y_proba_test = pipeline.predict_proba(X_test)[:, 1]
-y_pred_test = (y_proba_test >= 0.5).astype(int)
-
-print("\n=== Test Set Performance ===")
-print(classification_report(y_test, y_pred_test))
-print("Test ROC AUC:", roc_auc_score(y_test, y_proba_test))
-
-# 7. Save model & feature list
-joblib.dump(pipeline, "jet_engine_model.pkl")
+# SAVE feature columns list here
 joblib.dump(feature_cols, "feature_cols.pkl")
-print("\nModel saved to jet_engine_model.pkl")
+
+X = train_df[feature_cols]
+y = train_df['label']
+
+# Train/test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train a RandomForest model
+model = RandomForestClassifier(n_estimators=300, class_weight='balanced', random_state=42)
+model.fit(X_train, y_train)
+
+# Predictions and evaluation
+pred = model.predict(X_test)
+print("Classification Report:\n", classification_report(y_test, pred))
+print("Confusion Matrix:\n", confusion_matrix(y_test, pred))
+
+# Save trained model
+joblib.dump(model, "engine_model.pkl")
+print("Model saved successfully as engine_model.pkl")
