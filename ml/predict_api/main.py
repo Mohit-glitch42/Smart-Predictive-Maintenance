@@ -1,40 +1,56 @@
 from fastapi import FastAPI, HTTPException
-import joblib
-import numpy as np
 from pydantic import BaseModel
+from pathlib import Path
+import numpy as np
+import pickle
+import joblib
 
 app = FastAPI()
 
-# Load model & features (these files are in ml/ directory)
-model = joblib.load("engine_model.pkl")
-feature_cols = joblib.load("feature_cols.pkl")
-N_FEATURES = len(feature_cols)
+# ---- locate pickles in the ml root ----
+BASE_DIR = Path(__file__).resolve().parent.parent  # .../ml
 
-class SensorInput(BaseModel):
+# Load model & feature columns
+MODEL_PATH = BASE_DIR / "engine_model.pkl"
+FEATURE_COLS_PATH = BASE_DIR / "feature_cols.pkl"
+
+# engine_model.pkl was saved with joblib, so load with joblib
+model = joblib.load(MODEL_PATH)
+
+# feature_cols is small; joblib can also load it (even if saved with pickle)
+feature_cols = joblib.load(FEATURE_COLS_PATH)
+# should be:
+# ["cycles_since_maintenance",
+#  "avg_turbine_temp",
+#  "compressor_pressure_ratio",
+#  "vibration_level",
+#  "fuel_flow_variation",
+#  "previous_failures"]
+
+
+class PredictRequest(BaseModel):
     values: list[float]
 
-@app.get("/meta")
-def meta():
-    # Helpful endpoint to see what the model expects
-    return {
-        "n_features": N_FEATURES,
-        "feature_cols": feature_cols,
-    }
+class PredictResponse(BaseModel):
+    prediction: int
+    probability: float
 
-@app.post("/predict")
-def predict(data: SensorInput):
-    if len(data.values) != N_FEATURES:
+
+@app.post("/predict", response_model=PredictResponse)
+def predict(req: PredictRequest):
+    values = req.values
+
+    if len(values) != 6:
         raise HTTPException(
             status_code=400,
-            detail=f"Expected {N_FEATURES} values in this exact order: {feature_cols}. "
-                   f"Got {len(data.values)} values."
+            detail="Expected 6 values in order: "
+                   "[cycles_since_maintenance, avg_turbine_temp, "
+                   "compressor_pressure_ratio, vibration_level, "
+                   'fuel_flow_variation, previous_failures]',
         )
 
-    x = np.array(data.values).reshape(1, -1)
-    pred = model.predict(x)[0]
-    proba = model.predict_proba(x)[0][1]
+    X = np.array([values])
+    pred = int(model.predict(X)[0])
+    prob_failure = float(model.predict_proba(X)[0][1])
 
-    return {
-        "prediction": int(pred),
-        "probability": float(proba),
-    }
+    return PredictResponse(prediction=pred, probability=prob_failure)

@@ -76,7 +76,8 @@ function App() {
     setError(null);
     setLoading(true);
 
-    const payload = {
+    // This matches JetEngineRequest in the Spring backend
+    const frontendPayload = {
       cyclesSinceMaintenance: Number(form.cyclesSinceMaintenance),
       avgTurbineTemp: Number(form.avgTurbineTemp),
       compressorPressureRatio: Number(form.compressorPressureRatio),
@@ -85,27 +86,42 @@ function App() {
       previousFailures: Number(form.previousFailures),
     };
 
-    setLastPayload(payload);
+    // For "Last Input Payload" + history display
+    setLastPayload(frontendPayload);
 
     try {
-      const res = await predictFailure(payload);
-      setResult(res);
+      // Call Spring Boot backend (which then calls FastAPI)
+      const res = await predictFailure(frontendPayload);
+
+      // Backend returns: { prediction, probability, riskLevel }
+      // Normalize to also expose failureProbability so existing UI keeps working.
+      const normalized = {
+        ...res,
+        failureProbability:
+          res.failureProbability != null
+            ? res.failureProbability
+            : res.probability,
+      };
+
+      setResult(normalized);
 
       const probability =
-        res.failureProbability != null ? res.failureProbability : null;
+        normalized.failureProbability != null
+          ? normalized.failureProbability
+          : null;
 
       const newEntry = {
         id: Date.now(),
         timestamp: new Date().toLocaleTimeString(),
-        riskLevel: res.riskLevel,
-        prediction: res.prediction,
+        riskLevel: normalized.riskLevel,
+        prediction: normalized.prediction,
         failureProbability: probability,
-        payload,
+        payload: frontendPayload,
       };
 
-      setHistory((prev) => [newEntry, ...prev].slice(0, 5)); // keep last 5
+      setHistory((prev) => [newEntry, ...prev].slice(0, 5));
     } catch (err) {
-      console.error(err);
+      console.error("Prediction error:", err.response?.data || err.message);
       setError("Failed to get prediction. Please check backend / ML service.");
     } finally {
       setLoading(false);
@@ -265,7 +281,7 @@ function App() {
           {!result && (
             <p className="empty-state">
               No prediction yet. Enter engine parameters on the left and click{" "}
-              <b>“Predict Failure Risk”</b> to see the results.
+              <b>"Predict Failure Risk"</b> to see the results.
             </p>
           )}
 
@@ -314,7 +330,7 @@ function App() {
                 </div>
               </div>
 
-              {/* 🔍 Technical Details card */}
+              {/* Technical Details card */}
               <div className="tech-card">
                 <button
                   type="button"
@@ -421,7 +437,7 @@ function App() {
         </section>
       </main>
 
-      {/* 🔻 Dynamic bottom section with jet engine visual + rotating facts */}
+      {/* Dynamic bottom section with jet engine visual + rotating facts */}
       <section className="bottom-strip">
         <div className="bottom-inner">
           <div className="engine-visual-card">
