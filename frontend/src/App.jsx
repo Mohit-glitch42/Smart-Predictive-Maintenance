@@ -2,6 +2,23 @@ import { useState, useEffect } from "react";
 import { predictFailure } from "./api";
 import "./App.css";
 
+// 🔹 Global model metrics (from evaluate_cmaps_model.py)
+const MODEL_METRICS = {
+  rocAuc: 0.695,
+  prAuc: 0.507,
+  alertThreshold: 0.2, // 20%
+};
+
+// 🔹 Global feature importance (from permutation importance)
+const FEATURE_IMPORTANCE = [
+  { name: "Engine age (time_cycles)", key: "time_cycles", weight: 0.5012 },
+  { name: "Sensor 4", key: "sensor_4", weight: 0.1906 },
+  { name: "Sensor 12", key: "sensor_12", weight: 0.1388 },
+  { name: "Sensor 9", key: "sensor_9", weight: 0.0673 },
+  { name: "Sensor 2", key: "sensor_2", weight: 0.0524 },
+  { name: "Sensor 8", key: "sensor_8", weight: 0.0497 },
+];
+
 const FACTS = [
   "Model: RandomForestClassifier trained on jet engine performance data.",
   "Target label: failed_within_30_cycles (binary 0/1 classification).",
@@ -76,14 +93,18 @@ function App() {
     setError(null);
     setLoading(true);
 
-    // This matches JetEngineRequest in the Spring backend
+    const cappedPreviousFailures = Math.min(
+      Number(form.previousFailures),
+      10 // cap unrealistic values at 10
+    );
+
     const frontendPayload = {
       cyclesSinceMaintenance: Number(form.cyclesSinceMaintenance),
       avgTurbineTemp: Number(form.avgTurbineTemp),
       compressorPressureRatio: Number(form.compressorPressureRatio),
       vibrationLevel: Number(form.vibrationLevel),
       fuelFlowVariation: Number(form.fuelFlowVariation),
-      previousFailures: Number(form.previousFailures),
+      previousFailures: cappedPreviousFailures,
     };
 
     // For "Last Input Payload" + history display
@@ -273,11 +294,38 @@ function App() {
               {loading ? "Predicting..." : "Predict Failure Risk"}
             </button>
           </form>
+
+          {/* Input help card to use space and guide users */}
+          <div className="input-help-card">
+            <h3>Input ranges &amp; guidance</h3>
+            <ul>
+              <li>
+                <b>Cycles</b>: 0–300 is healthy, &gt; 300 requires closer
+                monitoring.
+              </li>
+              <li>
+                <b>Avg turbine temp</b>: values &gt; 900&nbsp;°C generally push
+                risk higher.
+              </li>
+              <li>
+                <b>Vibration</b>: &gt; 0.6 g indicates imbalance or wear.
+              </li>
+              <li>
+                <b>Previous failures</b>: more than one prior failure should be
+                treated as serious.
+              </li>
+            </ul>
+            <p className="input-help-note">
+              These bands are illustrative for demo purposes and can be tuned to
+              match real engine limits.
+            </p>
+          </div>
         </section>
 
         <section className="panel panel-right">
           <h2>Prediction Overview</h2>
 
+          {/* Top message or result card */}
           {!result && (
             <p className="empty-state">
               No prediction yet. Enter engine parameters on the left and click{" "}
@@ -286,154 +334,210 @@ function App() {
           )}
 
           {result && (
-            <>
-              <div className="result-card">
-                <div className="result-header">
-                  <span className={getRiskColorClass(result.riskLevel)}>
-                    {result.riskLevel || "UNKNOWN"}
-                  </span>
-                  <span className="result-label">
-                    {result.prediction === 1
-                      ? "Likely Failure Soon"
-                      : "Stable for Now"}
+            <div className="result-card">
+              <div className="result-header">
+                <span className={getRiskColorClass(result.riskLevel)}>
+                  {result.riskLevel || "UNKNOWN"}
+                </span>
+                <span className="result-label">
+                  {result.prediction === 1
+                    ? "Likely Failure Soon"
+                    : "Stable for Now"}
+                </span>
+              </div>
+
+              <div className="probability-section">
+                <div className="probability-header">
+                  <span>Failure Probability</span>
+                  <span className="probability-value">
+                    {probabilityPercent !== null
+                      ? `${probabilityPercent}%`
+                      : "N/A"}
                   </span>
                 </div>
+                <div className="probability-bar">
+                  <div
+                    className="probability-bar-fill"
+                    style={{
+                      width:
+                        probabilityPercent !== null
+                          ? `${Math.min(Math.max(probabilityPercent, 0), 100)}%`
+                          : "0%",
+                    }}
+                  ></div>
+                </div>
+              </div>
 
-                <div className="probability-section">
-                  <div className="probability-header">
-                    <span>Failure Probability</span>
-                    <span className="probability-value">
-                      {probabilityPercent !== null
-                        ? `${probabilityPercent}%`
-                        : "N/A"}
+              <div className="recommendation">
+                <h3>Recommendation</h3>
+                <p>{getSafetyMessage()}</p>
+              </div>
+            </div>
+          )}
+
+          {/* These cards are shown even before first prediction */}
+
+          <div className="metrics-card">
+            <h3>Model Metrics</h3>
+            <p className="metrics-subtitle">
+              Evaluated on the C-MAPSS test set (failure within 30 cycles).
+            </p>
+
+            <div className="metrics-grid">
+              <div className="metrics-item">
+                <span className="metrics-label">ROC-AUC</span>
+                <span className="metrics-value">
+                  {MODEL_METRICS.rocAuc.toFixed(3)}
+                </span>
+              </div>
+              <div className="metrics-item">
+                <span className="metrics-label">PR-AUC</span>
+                <span className="metrics-value">
+                  {MODEL_METRICS.prAuc.toFixed(3)}
+                </span>
+              </div>
+              <div className="metrics-item">
+                <span className="metrics-label">Alert Threshold</span>
+                <span className="metrics-value">
+                  {(MODEL_METRICS.alertThreshold * 100).toFixed(0)}%
+                </span>
+              </div>
+            </div>
+
+            <p className="metrics-note">
+              Alerts are raised when predicted failure probability is{" "}
+              <b>≥ {(MODEL_METRICS.alertThreshold * 100).toFixed(0)}%</b>, based
+              on ROC / PR curve analysis.
+            </p>
+          </div>
+
+          <div className="influence-card">
+            <h3>Feature Influence (overall)</h3>
+            <p className="influence-subtitle">
+              Permutation importance on the C-MAPSS test set — shows which
+              signals the model relies on most when assessing risk.
+            </p>
+
+            <ul className="influence-list">
+              {FEATURE_IMPORTANCE.map((f) => (
+                <li key={f.key} className="influence-item">
+                  <div className="influence-row">
+                    <span className="influence-name">{f.name}</span>
+                    <span className="influence-percent">
+                      {(f.weight * 100).toFixed(1)}%
                     </span>
                   </div>
-                  <div className="probability-bar">
+                  <div className="influence-bar">
                     <div
-                      className="probability-bar-fill"
-                      style={{
-                        width:
-                          probabilityPercent !== null
-                            ? `${Math.min(
-                                Math.max(probabilityPercent, 0),
-                                100
-                              )}%`
-                            : "0%",
-                      }}
-                    ></div>
+                      className="influence-bar-fill"
+                      style={{ width: `${Math.max(f.weight * 100, 3)}%` }}
+                    />
                   </div>
+                </li>
+              ))}
+            </ul>
+
+            <p className="influence-note">
+              For example, if <b>Engine age (time_cycles)</b> has ~50%
+              influence, it means engines with many cycles remaining are usually
+              low risk, while engines near end-of-life strongly push predictions
+              toward higher risk.
+            </p>
+          </div>
+
+          <div className="tech-card">
+            <button
+              type="button"
+              className="tech-toggle"
+              onClick={() => setShowTech((prev) => !prev)}
+            >
+              <span>Technical details</span>
+              <span className="tech-toggle-icon">{showTech ? "▴" : "▾"}</span>
+            </button>
+
+            {showTech && (
+              <div className="tech-content">
+                <div className="tech-section">
+                  <div className="tech-section-header">
+                    <span>Raw Model Response</span>
+                    <span className="tech-badge">Spring Boot → FastAPI</span>
+                  </div>
+                  <pre className="code-block">
+                    {result
+                      ? JSON.stringify(result, null, 2)
+                      : "// Run a prediction to see raw model response"}
+                  </pre>
                 </div>
 
-                <div className="recommendation">
-                  <h3>Recommendation</h3>
-                  <p>{getSafetyMessage()}</p>
-                </div>
-              </div>
-
-              {/* Technical Details card */}
-              <div className="tech-card">
-                <button
-                  type="button"
-                  className="tech-toggle"
-                  onClick={() => setShowTech((prev) => !prev)}
-                >
-                  <span>Technical details</span>
-                  <span className="tech-toggle-icon">
-                    {showTech ? "▴" : "▾"}
-                  </span>
-                </button>
-
-                {showTech && (
-                  <div className="tech-content">
-                    <div className="tech-section">
-                      <div className="tech-section-header">
-                        <span>Raw Model Response</span>
-                        <span className="tech-badge">
-                          Spring Boot → FastAPI
-                        </span>
-                      </div>
-                      <pre className="code-block">
-                        {JSON.stringify(result, null, 2)}
-                      </pre>
-                    </div>
-
-                    <div className="tech-section">
-                      <div className="tech-section-header">
-                        <span>Last Input Payload</span>
-                        <span className="tech-badge">Frontend → Backend</span>
-                      </div>
-                      <pre className="code-block">
-                        {lastPayload
-                          ? JSON.stringify(lastPayload, null, 2)
-                          : "// Run a prediction to see payload"}
-                      </pre>
-                    </div>
-
-                    <div className="tech-section tech-notes">
-                      <div className="tech-section-header">
-                        <span>Model Configuration (documentation)</span>
-                      </div>
-                      <ul>
-                        <li>
-                          Algorithm: RandomForestClassifier (scikit-learn)
-                        </li>
-                        <li>
-                          Target: <code>failed_within_30_cycles</code> (0/1)
-                        </li>
-                        <li>
-                          Features: cycles_since_maintenance, avg_turbine_temp,
-                          compressor_pressure_ratio, vibration_level,
-                          fuel_flow_variation, previous_failures
-                        </li>
-                        <li>Preprocessing: train/test split + scaling</li>
-                        <li>
-                          Serving: FastAPI microservice → Spring Boot proxy
-                        </li>
-                      </ul>
-                    </div>
+                <div className="tech-section">
+                  <div className="tech-section-header">
+                    <span>Last Input Payload</span>
+                    <span className="tech-badge">Frontend → Backend</span>
                   </div>
-                )}
-              </div>
+                  <pre className="code-block">
+                    {lastPayload
+                      ? JSON.stringify(lastPayload, null, 2)
+                      : "// Run a prediction to see payload"}
+                  </pre>
+                </div>
 
-              <div className="history-card">
-                <h3>Recent Predictions</h3>
-                {history.length === 0 && (
-                  <p className="empty-state-small">
-                    Predictions will appear here as you run them.
-                  </p>
-                )}
-                {history.length > 0 && (
-                  <ul className="history-list">
-                    {history.map((item) => (
-                      <li key={item.id} className="history-item">
-                        <div className="history-main">
-                          <span className={getRiskColorClass(item.riskLevel)}>
-                            {item.riskLevel}
-                          </span>
-                          <span className="history-time">{item.timestamp}</span>
-                        </div>
-                        <div className="history-detail">
-                          <span>
-                            Cycles: {item.payload.cyclesSinceMaintenance}
-                          </span>
-                          <span>
-                            Temp: {item.payload.avgTurbineTemp}°C | Vib:{" "}
-                            {item.payload.vibrationLevel}
-                          </span>
-                          <span>
-                            Prob:{" "}
-                            {item.failureProbability != null
-                              ? `${(item.failureProbability * 100).toFixed(1)}%`
-                              : "N/A"}
-                          </span>
-                        </div>
-                      </li>
-                    ))}
+                <div className="tech-section tech-notes">
+                  <div className="tech-section-header">
+                    <span>Model Configuration (documentation)</span>
+                  </div>
+                  <ul>
+                    <li>Algorithm: RandomForestClassifier (scikit-learn)</li>
+                    <li>
+                      Target: <code>failed_within_30_cycles</code> (0/1)
+                    </li>
+                    <li>
+                      Features: cycles_since_maintenance, avg_turbine_temp,
+                      compressor_pressure_ratio, vibration_level,
+                      fuel_flow_variation, previous_failures
+                    </li>
+                    <li>Preprocessing: train/test split + scaling</li>
+                    <li>Serving: FastAPI microservice → Spring Boot proxy</li>
                   </ul>
-                )}
+                </div>
               </div>
-            </>
-          )}
+            )}
+          </div>
+
+          <div className="history-card">
+            <h3>Recent Predictions</h3>
+            {history.length === 0 && (
+              <p className="empty-state-small">
+                Predictions will appear here as you run them.
+              </p>
+            )}
+            {history.length > 0 && (
+              <ul className="history-list">
+                {history.map((item) => (
+                  <li key={item.id} className="history-item">
+                    <div className="history-main">
+                      <span className={getRiskColorClass(item.riskLevel)}>
+                        {item.riskLevel}
+                      </span>
+                      <span className="history-time">{item.timestamp}</span>
+                    </div>
+                    <div className="history-detail">
+                      <span>Cycles: {item.payload.cyclesSinceMaintenance}</span>
+                      <span>
+                        Temp: {item.payload.avgTurbineTemp}°C | Vib:{" "}
+                        {item.payload.vibrationLevel}
+                      </span>
+                      <span>
+                        Prob:{" "}
+                        {item.failureProbability != null
+                          ? `${(item.failureProbability * 100).toFixed(1)}%`
+                          : "N/A"}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </section>
       </main>
 
